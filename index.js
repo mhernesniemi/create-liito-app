@@ -60,7 +60,7 @@ async function main() {
   // 3. Demo content
   const seedDemo = await p.confirm({
     message: "Seed database with demo content?",
-    initialValue: true,
+    initialValue: false,
   });
 
   if (p.isCancel(seedDemo)) {

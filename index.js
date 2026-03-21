@@ -219,6 +219,8 @@ async function main() {
   } else {
     p.note(
       [
+        `cd ${projectName}`,
+        "",
         "Set up Cloudflare resources:",
         `  ${pm.exec} wrangler d1 create ${projectName}-db`,
         `  ${pm.exec} wrangler r2 bucket create ${projectName}-assets`,
@@ -228,10 +230,10 @@ async function main() {
         `  ${pm.exec} wrangler d1 execute ${projectName}-db --remote --file=src/cms/migrations/0000_init.sql`,
         "",
         "Local development:",
-        `  cd ${projectName} && ${pm.run} dev`,
+        `  ${pm.run} dev`,
         "",
         "Deploy:",
-        `  pnpm run deploy`,
+        "  pnpm run deploy",
       ].join("\n"),
       "Next steps",
     );

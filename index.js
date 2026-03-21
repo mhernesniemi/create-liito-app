@@ -57,15 +57,19 @@ async function main() {
     process.exit(0);
   }
 
-  // 3. Demo content
-  const seedDemo = await p.confirm({
-    message: "Seed database with demo content?",
-    initialValue: false,
-  });
+  // 3. Demo content (local only — Cloudflare uses remote D1)
+  let seedDemo = false;
+  if (target === "local") {
+    const seed = await p.confirm({
+      message: "Seed database with demo content?",
+      initialValue: false,
+    });
 
-  if (p.isCancel(seedDemo)) {
-    p.cancel("Setup cancelled.");
-    process.exit(0);
+    if (p.isCancel(seed)) {
+      p.cancel("Setup cancelled.");
+      process.exit(0);
+    }
+    seedDemo = seed;
   }
 
   const s = p.spinner();

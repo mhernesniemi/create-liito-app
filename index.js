@@ -121,9 +121,10 @@ async function main() {
 
   if (target === "cloudflare") {
     delete pkg.dependencies["@astrojs/node"];
-    pkg.dependencies["@astrojs/cloudflare"] = "^12.0.0";
+    pkg.dependencies["@astrojs/cloudflare"] = "^13.0.0";
 
     delete pkg.dependencies["better-sqlite3"];
+    delete pkg.dependencies["sharp"];
     if (pkg.devDependencies) delete pkg.devDependencies["@types/better-sqlite3"];
     if (pkg.pnpm?.onlyBuiltDependencies) {
       pkg.pnpm.onlyBuiltDependencies = pkg.pnpm.onlyBuiltDependencies.filter((d) => d !== "better-sqlite3");
@@ -139,8 +140,8 @@ async function main() {
 
     pkg.scripts.dev = "astro dev";
     pkg.scripts.build = "astro build";
-    pkg.scripts.preview = "wrangler pages dev ./dist";
-    pkg.scripts.deploy = "astro build && wrangler pages deploy ./dist";
+    pkg.scripts.preview = "astro build && wrangler dev --config dist/server/wrangler.json";
+    pkg.scripts.deploy = "astro build && wrangler deploy --config dist/server/wrangler.json";
   }
 
   writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
@@ -222,6 +223,9 @@ async function main() {
         `  ${pm.exec} wrangler d1 create ${projectName}-db`,
         `  ${pm.exec} wrangler r2 bucket create ${projectName}-assets`,
         "  # Add the database_id to wrangler.toml",
+        "",
+        "Push database schema:",
+        `  ${pm.exec} wrangler d1 execute ${projectName}-db --remote --file=src/cms/migrations/0000_init.sql`,
         "",
         "Local development:",
         `  cd ${projectName} && ${pm.run} dev`,

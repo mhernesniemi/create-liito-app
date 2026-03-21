@@ -9,16 +9,8 @@ import cmsIntegration from "./src/cms/integration";
 export default defineConfig({
   output: "server",
   integrations: [react(), cmsIntegration()],
-  adapter: cloudflare({
-    platformProxy: {
-      enabled: true,
-    },
-  }),
+  adapter: cloudflare(),
   vite: {
     plugins: [tailwindcss()],
-    resolve: {
-      // Ensure Cloudflare-compatible modules are used
-      conditions: ["workerd", "worker", "browser"],
-    },
   },
 });

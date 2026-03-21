@@ -231,7 +231,7 @@ async function main() {
         `  cd ${projectName} && ${pm.run} dev`,
         "",
         "Deploy:",
-        `  ${pm.run} deploy`,
+        `  pnpm run deploy`,
       ].join("\n"),
       "Next steps",
     );

@@ -7,6 +7,9 @@ binding = "CMS_DB"
 database_name = "{{PROJECT_NAME}}-db"
 database_id = "" # Run: npx wrangler d1 create {{PROJECT_NAME}}-db
 
+[triggers]
+crons = ["* * * * *"]  # scheduled publishing — every minute
+
 [[r2_buckets]]
 binding = "CMS_ASSETS"
 bucket_name = "{{PROJECT_NAME}}-assets"

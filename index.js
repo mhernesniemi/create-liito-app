@@ -251,7 +251,15 @@ async function main() {
           if (!p.isCancel(visibility)) {
             s.start("Creating GitHub repository");
             try {
-              execSync(`gh repo create ${repoName} ${visibility} --source=. --push`, {
+              execSync(`gh repo create ${repoName} ${visibility}`, { cwd: projectDir, stdio: "pipe" });
+
+              // Use SSH for the remote (works with the user's existing SSH keys;
+              // avoids HTTPS credential prompts when gh's git_protocol defaults to https).
+              execSync(`git remote add origin git@github.com:${ghUser}/${repoName}.git`, {
+                cwd: projectDir,
+                stdio: "pipe",
+              });
+              execSync("git branch -M main && git push -u origin main", {
                 cwd: projectDir,
                 stdio: "pipe",
               });

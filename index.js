@@ -1,25 +1,44 @@
 #!/usr/bin/env node
 
 import * as p from "@clack/prompts";
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const TEMPLATES_DIR = path.join(__dirname, "templates");
+// Async spawn wrapper so long-running commands don't block clack spinners
+const runAsync = (cmd, cwd) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(cmd, { cwd, shell: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => (stdout += d.toString()));
+    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.on("close", (code) => {
+      if (code === 0) resolve(stdout);
+      else {
+        const err = new Error(`Command failed: ${cmd}`);
+        err.stderr = stderr;
+        err.stdout = stdout;
+        reject(err);
+      }
+    });
+  });
 
 // --- Package manager detection ---
 
-const pm = { name: "pnpm", exec: "pnpm dlx", run: "pnpm", install: "pnpm install" };
+const pm = { name: "pnpm", exec: "pnpm exec", dlx: "pnpm dlx", run: "pnpm", install: "pnpm install" };
 
-// --- Template repo URL ---
-const REPO_URL = "https://github.com/mhernesniemi/kide-cms/archive/refs/heads/main.tar.gz";
+// --- Template repo ---
+
+const REPO = "https://github.com/mhernesniemi/kide-cms.git";
+
+// Files from the kide-cms repo that shouldn't leak into scaffolded projects.
+const CLEANUP = ["docs", "CLAUDE.md", ".claude", "data", ".cms-data", "dist", ".astro", ".DS_Store"];
 
 // --- Main ---
 
 async function main() {
-  p.intro("Create Kide CMS Project");
+  p.intro("🪐 Create Kide CMS Project");
 
   // 1. Project name
   const projectName =
@@ -74,36 +93,22 @@ async function main() {
 
   const s = p.spinner();
 
-  // --- Scaffold ---
+  // --- Scaffold via git clone ---
 
   s.start(`Scaffolding project (using ${pm.name})`);
 
-  mkdirSync(projectDir, { recursive: true });
-  const tmpArchive = path.join(projectDir, "_template.tar.gz");
-
   try {
-    execSync(`curl -sL "${REPO_URL}" -o "${tmpArchive}"`, { stdio: "pipe" });
-    execSync(`tar -xzf "${tmpArchive}" -C "${projectDir}" --strip-components=1`, { stdio: "pipe" });
-    rmSync(tmpArchive, { force: true });
+    execSync(`git clone --depth 1 ${REPO} "${projectDir}"`, { stdio: "pipe" });
+    rmSync(path.join(projectDir, ".git"), { recursive: true, force: true });
   } catch {
-    s.message("Archive download failed, trying git clone...");
-    rmSync(projectDir, { recursive: true, force: true });
-    try {
-      execSync(`git clone --depth 1 https://github.com/mhernesniemi/kide-cms.git "${projectDir}"`, {
-        stdio: "pipe",
-      });
-      rmSync(path.join(projectDir, ".git"), { recursive: true, force: true });
-    } catch {
-      s.stop("Failed to download template.");
-      p.cancel("Check your network connection.");
-      process.exit(1);
-    }
+    s.stop("Failed to download template.");
+    p.cancel("Check your network connection.");
+    process.exit(1);
   }
 
   // Remove files that shouldn't be in the scaffold
-  for (const remove of ["docs", "packages", "CLAUDE.md", ".claude", "data", ".cms-data", "dist", ".astro", ".env"]) {
-    const fp = path.join(projectDir, remove);
-    if (existsSync(fp)) rmSync(fp, { recursive: true, force: true });
+  for (const f of CLEANUP) {
+    rmSync(path.join(projectDir, f), { recursive: true, force: true });
   }
 
   s.stop("Project scaffolded");
@@ -112,17 +117,17 @@ async function main() {
 
   s.start(`Applying ${target} configuration`);
 
-  const targetDir = path.join(TEMPLATES_DIR, target);
-
-  cpSync(path.join(targetDir, "astro.config.mjs"), path.join(projectDir, "astro.config.mjs"));
-  cpSync(path.join(targetDir, "db.ts"), path.join(projectDir, "src/cms/core/db.ts"));
-  cpSync(path.join(targetDir, "drizzle.config.ts"), path.join(projectDir, "drizzle.config.ts"));
+  const adaptersDir = path.join(projectDir, "adapters");
+  const targetDir = path.join(adaptersDir, target);
 
   if (target === "cloudflare") {
-    cpSync(path.join(targetDir, "storage.ts"), path.join(projectDir, "src/cms/core/storage.ts"));
+    cpSync(path.join(targetDir, "astro.config.mjs"), path.join(projectDir, "astro.config.mjs"));
+    cpSync(path.join(targetDir, "src/cms/adapters/db.ts"), path.join(projectDir, "src/cms/adapters/db.ts"));
+    cpSync(path.join(targetDir, "drizzle.config.ts"), path.join(projectDir, "drizzle.config.ts"));
+    cpSync(path.join(targetDir, "src/cms/adapters/storage.ts"), path.join(projectDir, "src/cms/adapters/storage.ts"));
     const uploadsRouteDir = path.join(projectDir, "src/pages/uploads");
     mkdirSync(uploadsRouteDir, { recursive: true });
-    cpSync(path.join(targetDir, "uploads-route.ts"), path.join(uploadsRouteDir, "[...path].ts"));
+    cpSync(path.join(targetDir, "src/pages/uploads/[...path].ts"), path.join(uploadsRouteDir, "[...path].ts"));
   }
 
   const pkgPath = path.join(projectDir, "package.json");
@@ -156,12 +161,7 @@ async function main() {
 
   writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
 
-  if (target === "cloudflare") {
-    const gitignorePath = path.join(projectDir, ".gitignore");
-    let gitignore = readFileSync(gitignorePath, "utf-8");
-    gitignore += "\n# Cloudflare\n.wrangler/\n";
-    writeFileSync(gitignorePath, gitignore);
-  }
+  rmSync(adaptersDir, { recursive: true, force: true });
 
   s.stop("Configuration applied");
 
@@ -169,10 +169,101 @@ async function main() {
 
   s.start("Installing dependencies");
   try {
-    execSync(pm.install, { cwd: projectDir, stdio: "pipe" });
+    await runAsync(pm.install, projectDir);
     s.stop("Dependencies installed");
   } catch {
     s.stop(`${pm.install} failed — run it manually`);
+  }
+
+  // --- Initialize git repository ---
+
+  let gitInitialized = false;
+  try {
+    execSync("git init -q && git add . && git commit -q -m 'Initial commit from create-kide-app'", {
+      cwd: projectDir,
+      stdio: "pipe",
+    });
+    gitInitialized = true;
+  } catch {
+    // git not available — silently skip
+  }
+
+  // --- Optional: create GitHub repository ---
+
+  if (gitInitialized) {
+    let ghAvailable = false;
+    try {
+      execSync("gh --version", { stdio: "pipe" });
+      execSync("gh auth status", { stdio: "pipe" });
+      ghAvailable = true;
+    } catch {
+      // gh not installed or not authenticated — skip the prompt
+    }
+
+    if (ghAvailable) {
+      const createRepo = await p.confirm({
+        message: "Create a GitHub repository for this project?",
+        initialValue: false,
+      });
+      if (!p.isCancel(createRepo) && createRepo) {
+        // Get the GitHub username so we can check repo availability
+        let ghUser = "";
+        try {
+          ghUser = execSync("gh api user --jq .login", { stdio: "pipe" }).toString().trim();
+        } catch {
+          // ignore
+        }
+
+        // Prompt for repo name, validate it doesn't already exist
+        let repoName = null;
+        while (true) {
+          const input = await p.text({
+            message: "Repository name",
+            initialValue: projectName,
+            validate: (value) => {
+              if (!value) return "Repository name is required";
+              if (!/^[a-zA-Z0-9._-]+$/.test(value)) return "Only letters, numbers, dots, hyphens, and underscores";
+            },
+          });
+          if (p.isCancel(input)) break;
+
+          if (ghUser) {
+            try {
+              execSync(`gh repo view ${ghUser}/${input}`, { stdio: "pipe" });
+              p.note(`A repository named "${input}" already exists. Pick a different name.`, "Name taken");
+              continue;
+            } catch {
+              // Repo doesn't exist — name is free
+            }
+          }
+          repoName = input;
+          break;
+        }
+
+        if (repoName) {
+          const visibility = await p.select({
+            message: "Repository visibility",
+            options: [
+              { label: "Private", value: "--private" },
+              { label: "Public", value: "--public" },
+            ],
+          });
+          if (!p.isCancel(visibility)) {
+            s.start("Creating GitHub repository");
+            try {
+              execSync(`gh repo create ${repoName} ${visibility} --source=. --push`, {
+                cwd: projectDir,
+                stdio: "pipe",
+              });
+              s.stop("GitHub repository created and pushed");
+            } catch (err) {
+              s.stop("GitHub repository creation failed");
+              if (err.stderr) console.error(err.stderr.toString().slice(-500));
+            }
+          }
+        }
+      }
+    }
   }
 
   // --- Generate schema ---
@@ -189,9 +280,16 @@ async function main() {
 
   if (seedDemo && target === "local") {
     s.start("Pushing schema to database");
+    // Ensure data/ directory exists — drizzle-kit push silently exits 0 if it can't open the file
+    mkdirSync(path.join(projectDir, "data"), { recursive: true });
+    let pushOk = false;
     try {
-      execSync(`${pm.exec} drizzle-kit push --force`, { cwd: projectDir, stdio: "pipe" });
-      s.stop("Schema pushed");
+      const out = execSync(`${pm.exec} drizzle-kit push --force`, {
+        cwd: projectDir,
+        stdio: "pipe",
+      }).toString();
+      pushOk = !out.includes("Error:") && out.includes("Changes applied");
+      s.stop(pushOk ? "Schema pushed" : "Schema push failed — run `pnpm exec drizzle-kit push` manually");
     } catch {
       s.stop("Schema will be set up on first dev start");
     }
@@ -199,21 +297,156 @@ async function main() {
     try {
       execSync(`${pm.run} cms:seed`, { cwd: projectDir, stdio: "pipe" });
       s.stop("Demo content seeded");
-    } catch {
+    } catch (err) {
       s.stop("Seeding failed — run `pnpm cms:seed` manually");
+      if (err.stderr) console.error(err.stderr.toString());
+      if (err.stdout) console.error(err.stdout.toString());
     }
   } else if (seedDemo && target === "cloudflare") {
     p.note(
       [
         "Seeding for Cloudflare requires a D1 database.",
         "",
-        `  ${pm.exec} wrangler d1 create ${projectName}-db`,
+        `  ${pm.dlx} wrangler d1 create ${projectName}-db`,
         "  # Add the database_id to wrangler.toml",
-        `  ${pm.exec} wrangler d1 migrations apply ${projectName}-db --local`,
+        `  ${pm.dlx} wrangler d1 migrations apply ${projectName}-db --local`,
         `  ${pm.run} cms:seed`,
       ].join("\n"),
       "Seed manually",
     );
+  }
+
+  // --- Cloudflare resource setup ---
+
+  const cf = { d1Created: false, r2Created: false, migrationsApplied: false, deployed: false, url: null };
+  if (target === "cloudflare") {
+    const setupNow = await p.confirm({
+      message: "Set up Cloudflare resources now? (creates D1 database and R2 bucket)",
+      initialValue: true,
+    });
+
+    if (!p.isCancel(setupNow) && setupNow) {
+      // Check wrangler authentication
+      let authenticated = false;
+      try {
+        execSync(`${pm.exec} wrangler whoami`, { cwd: projectDir, stdio: "pipe" });
+        authenticated = true;
+      } catch {
+        p.note("You need to log in to Cloudflare first.", "Wrangler login required");
+        const doLogin = await p.confirm({ message: "Open browser to log in?", initialValue: true });
+        if (!p.isCancel(doLogin) && doLogin) {
+          try {
+            execSync(`${pm.exec} wrangler login`, { cwd: projectDir, stdio: "inherit" });
+            authenticated = true;
+          } catch {
+            s.stop("Login failed");
+          }
+        }
+      }
+
+      if (authenticated) {
+        // Create D1 database
+        let databaseId = null;
+        s.start("Creating D1 database");
+        try {
+          const output = execSync(`${pm.exec} wrangler d1 create ${projectName}-db`, {
+            cwd: projectDir,
+            stdio: "pipe",
+          }).toString();
+          const match = output.match(/database_id\s*=\s*"([^"]+)"/);
+          if (match) databaseId = match[1];
+          cf.d1Created = true;
+          s.stop("D1 database created");
+        } catch (err) {
+          // Already exists — look it up
+          try {
+            const listOutput = execSync(`${pm.exec} wrangler d1 list`, { cwd: projectDir, stdio: "pipe" }).toString();
+            const lines = listOutput.split("\n");
+            const dbLine = lines.find((l) => l.includes(`${projectName}-db`));
+            if (dbLine) {
+              const idMatch = dbLine.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+              if (idMatch) databaseId = idMatch[0];
+            }
+            if (databaseId) {
+              cf.d1Created = true;
+              s.stop("D1 database already exists — using existing");
+            } else {
+              s.stop("D1 setup failed");
+              if (err.stderr) console.error(err.stderr.toString());
+            }
+          } catch {
+            s.stop("D1 setup failed");
+          }
+        }
+
+        // Update wrangler.toml with database_id
+        if (databaseId) {
+          const wranglerPath = path.join(projectDir, "wrangler.toml");
+          let wranglerContent = readFileSync(wranglerPath, "utf-8");
+          wranglerContent = wranglerContent.replace(/database_id = "" #[^\n]*/, `database_id = "${databaseId}"`);
+          writeFileSync(wranglerPath, wranglerContent);
+        }
+
+        // Create R2 bucket
+        s.start("Creating R2 bucket");
+        try {
+          execSync(`${pm.exec} wrangler r2 bucket create ${projectName}-assets`, { cwd: projectDir, stdio: "pipe" });
+          cf.r2Created = true;
+          s.stop("R2 bucket created");
+        } catch {
+          cf.r2Created = true;
+          s.stop("R2 bucket already exists");
+        }
+
+        // Generate migrations and apply to remote D1
+        if (databaseId) {
+          s.start("Generating database migrations");
+          try {
+            execSync(`${pm.exec} drizzle-kit generate`, { cwd: projectDir, stdio: "pipe" });
+            s.stop("Migrations generated");
+          } catch (err) {
+            s.stop("Migration generation failed");
+            if (err.stderr) console.error(err.stderr.toString().slice(-800));
+            if (err.stdout) console.error(err.stdout.toString().slice(-800));
+          }
+
+          s.start("Applying migrations to remote D1");
+          try {
+            execSync(`${pm.exec} wrangler d1 migrations apply ${projectName}-db --remote`, {
+              cwd: projectDir,
+              stdio: "pipe",
+              input: "y\n",
+            });
+            cf.migrationsApplied = true;
+            s.stop("Migrations applied");
+          } catch {
+            s.stop("Migration apply failed — run manually with: wrangler d1 migrations apply --remote");
+          }
+        }
+
+        // Deploy to Cloudflare
+        if (cf.migrationsApplied) {
+          const doDeploy = await p.confirm({
+            message: "Deploy to Cloudflare now?",
+            initialValue: true,
+          });
+          if (!p.isCancel(doDeploy) && doDeploy) {
+            s.start("Building and deploying to Cloudflare");
+            try {
+              const deployOutput = await runAsync(`${pm.run} run deploy`, projectDir);
+              const urlMatch = deployOutput.match(/https:\/\/[^\s]+\.workers\.dev/);
+              if (urlMatch) cf.url = urlMatch[0];
+              cf.deployed = true;
+              s.stop("Deployed to Cloudflare");
+            } catch (err) {
+              s.stop("Deploy failed — run manually with: pnpm run deploy");
+              if (err.stderr) console.error(err.stderr.slice(-1500));
+              if (err.stdout) console.error(err.stdout.slice(-1500));
+            }
+          }
+        }
+      }
+    }
   }
 
   // --- Done ---
@@ -227,27 +460,45 @@ async function main() {
       console.log(`  To start again:   cd ${projectName} && pnpm dev\n`);
     }
   } else {
-    p.note(
-      [
-        `cd ${projectName}`,
-        "",
-        "Set up Cloudflare resources:",
-        `  ${pm.exec} wrangler d1 create ${projectName}-db`,
-        "  # Copy the database_id to wrangler.toml",
-        `  ${pm.exec} wrangler r2 bucket create ${projectName}-assets`,
-        "",
-        "Push database schema:",
-        `  ${pm.exec} wrangler d1 migrations apply ${projectName}-db --remote`,
-        "",
-        "Local development:",
-        `  ${pm.run} dev`,
-        "",
-        "Deploy:",
-        "  pnpm run deploy",
-      ].join("\n"),
-      "Next steps",
-    );
-    p.outro("Project created!");
+    if (cf.deployed && cf.url) {
+      p.note(
+        [
+          `Live at: ${cf.url}`,
+          `Admin:   ${cf.url}/admin`,
+          "",
+          `cd ${projectName}`,
+          "",
+          "Local development:",
+          `  ${pm.run} dev`,
+          "",
+          "Redeploy:",
+          "  pnpm run deploy",
+        ].join("\n"),
+        "🎉 Your Kide CMS is live",
+      );
+      p.outro("Project created!");
+    } else {
+      const lines = [`cd ${projectName}`];
+      const remaining = [];
+      if (!cf.d1Created) {
+        remaining.push(`  ${pm.dlx} wrangler d1 create ${projectName}-db`, "  # Copy the database_id to wrangler.toml");
+      }
+      if (!cf.r2Created) {
+        remaining.push(`  ${pm.dlx} wrangler r2 bucket create ${projectName}-assets`);
+      }
+      if (!cf.migrationsApplied) {
+        remaining.push(`  ${pm.dlx} wrangler d1 migrations apply ${projectName}-db --remote`);
+      }
+      if (!cf.deployed) {
+        remaining.push(`  ${pm.run} run deploy`);
+      }
+      if (remaining.length > 0) {
+        lines.push("", "Remaining setup:", ...remaining);
+      }
+      lines.push("", "Local development:", `  ${pm.run} dev`);
+      p.note(lines.join("\n"), "Next steps");
+      p.outro("Project created!");
+    }
   }
 }
 
